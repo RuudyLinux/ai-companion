@@ -1,0 +1,68 @@
+# Production-style stack: PostgreSQL + Redis + web + background worker.
+#   cp app/.env.example .env   # then set JWT_SECRET, OPENROUTER_API_KEY, INWORLD_API_KEY, POSTGRES_PASSWORD
+#   docker compose up -d --build
+# The `migrate` service applies Alembic migrations before web/worker start.
+x-app: &app
+  build: ./app
+  env_file: .env
+  environment:
+    APP_ENV: production
+    DATABASE_URL: postgresql+psycopg://companion:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/companion
+    REDIS_URL: redis://redis:6379/0
+    DATA_DIR: /data
+    VOICE_ENGINE: ${VOICE_ENGINE:-inworld}
+    WORKER_MODE: external
+    AUTO_MIGRATE: "false"
+  volumes:
+    - companion-data:/data
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: companion
+      POSTGRES_USER: companion
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companion -d companion"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "jobs.worker", "--queues", "tts,background"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pg-data:
+  companion-data:
