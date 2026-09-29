@@ -1,0 +1,30 @@
+<header class="nav">
+  <div class="nav-brand-row">
+    <button type="button" class="icon-btn nav-toggle" aria-label="Menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <a href="/companions" class="brand">✨ AI Companion</a>
+  </div>
+
+  <nav class="nav-links">
+    <a href="/companions">Companions</a>
+    <a href="/voices">Voice Library</a>
+    <a href="/voice-history">Voice Messages</a>
+    <a href="/settings">Settings</a>
+    {% if user.role in ("admin", "super_admin") %}
+    <a href="/admin">Admin</a>
+    {% endif %}
+  </nav>
+
+  <div class="nav-user">
+    <span class="user-email">{{ user.email }}</span>
+    <span class="role-pill {{ user.role }}">{{ user.role }}</span>
+    <button type="button" class="icon-btn theme-toggle" data-theme-toggle title="Toggle theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+    <form action="/logout" method="post" class="logout-form">
+      <button type="submit" class="btn btn-ghost btn-sm">Sign out</button>
+    </form>
+  </div>
+</header>

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Voice Messages — AI Companion{% endblock %}
+{% block content %}
+{% include "_nav.html" %}
+<div class="page page-wide">
+  <h1>Voice Message History</h1>
+  <p class="subtitle">Every generated reply, replayable, downloadable, shareable.</p>
+  <div class="glass role-list" id="vm-list">
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function load() {
+    const list = document.getElementById("vm-list");
+    let items;
+    try {
+      const res = await fetch("/api/voice-messages");
+      items = await res.json();
+    } catch (err) {
+      list.innerHTML = '<p class="empty-hint">Could not load voice messages.</p>';
+      return;
+    }
+    list.innerHTML = "";
+    if (items.length === 0) {
+      list.innerHTML = '<p class="empty-hint">No voice messages yet.</p>';
+      return;
+    }
+    for (const vm of items) {
+      const row = document.createElement("div");
+      row.className = "vm-row";
+      row.innerHTML = `
+        <button type="button" class="audio-btn" data-play>▶</button>
+        <div class="vm-info">
+          <div class="vm-text">${vm.text_preview.replace(/</g, "&lt;")}</div>
+          <div class="vm-meta">${vm.companion_name} · ${vm.duration_seconds ? vm.duration_seconds.toFixed(1) + "s" : ""} · ${new Date(vm.created_at).toLocaleString()}${vm.tts_style ? " · " + vm.tts_style : ""}</div>
+        </div>
+        <div class="vm-actions">
+          <button type="button" class="btn btn-ghost btn-sm" data-download>Download</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-share>Share</button>
+          <button type="button" class="btn btn-danger btn-sm" data-delete>Delete</button>
+        </div>
+      `;
+      const audio = new Audio(vm.audio_url);
+      const playBtn = row.querySelector("[data-play]");
+      playBtn.addEventListener("click", () => (audio.paused ? audio.play() : audio.pause()));
+      audio.addEventListener("play", () => (playBtn.textContent = "⏸"));
+      audio.addEventListener("pause", () => (playBtn.textContent = "▶"));
+      audio.addEventListener("ended", () => (playBtn.textContent = "▶"));
+
+      row.querySelector("[data-download]").addEventListener("click", () => {
+        window.location.href = `/api/voice-messages/${vm.id}/download`;
+      });
+      row.querySelector("[data-share]").addEventListener("click", async () => {
+        const res = await fetch(`/api/voice-messages/${vm.id}/share`);
+        const data = await res.json();
+        await navigator.clipboard.writeText(window.location.origin + data.url);
+        if (window.showToast) window.showToast("Link copied to clipboard.", "success");
+      });
+      row.querySelector("[data-delete]").addEventListener("click", async () => {
+        if (!confirm("Delete this voice message?")) return;
+        await fetch(`/api/voice-messages/${vm.id}`, { method: "DELETE" });
+        if (window.showToast) window.showToast("Voice message deleted.", "success");
+        load();
+      });
+
+      document.getElementById("vm-list").appendChild(row);
+    }
+  }
+  load();
+</script>
+{% endblock %}

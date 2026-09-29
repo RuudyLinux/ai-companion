@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Voice Library — AI Companion{% endblock %}
+{% block content %}
+{% include "_nav.html" %}
+<div class="page page-xwide">
+  <h1>Voice Library</h1>
+  <p class="subtitle">
+    Your cloned voice plus {{ voices|length - 1 }} Inworld studio voices. Previews generate on first click and are
+    cached after (Inworld is a paid API, so nothing is pre-generated in bulk). Combine any voice with an emotion or
+    voice-changer style in chat for more variety.
+  </p>
+
+  <input type="text" id="voice-search" class="mb-lg voice-search-input" placeholder="Search by name, gender, or language...">
+
+  <div class="voice-grid" id="voice-grid">
+    {% for v in voices %}
+    <div class="glass voice-card" data-search="{{ v.name|lower }} {{ v.category|lower }}" style="animation-delay: {{ loop.index0 * 0.03 }}s;">
+      <div class="voice-name">{{ "⭐ " if v.kind == "cloned" else "" }}{{ v.name }}</div>
+      <div class="voice-cat">{{ v.category }}</div>
+      <button type="button" class="btn btn-ghost btn-sm play-preview" data-voice-id="{{ v.id }}">▶ Preview</button>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll(".play-preview").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const original = btn.textContent;
+      btn.innerHTML = '<span class="spinner"></span> Loading...';
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/voices/${btn.dataset.voiceId}/preview`, { method: "POST" });
+        if (!res.ok) throw new Error("preview failed");
+        const blob = await res.blob();
+        new Audio(URL.createObjectURL(blob)).play();
+      } catch (err) {
+        console.error(err);
+        if (window.showToast) window.showToast("Couldn't load that preview.", "error");
+      } finally {
+        btn.textContent = original;
+        btn.disabled = false;
+      }
+    });
+  });
+
+  const searchInput = document.getElementById("voice-search");
+  const cards = document.querySelectorAll("#voice-grid .voice-card");
+  searchInput.addEventListener("input", () => {
+    const q = searchInput.value.toLowerCase().trim();
+    cards.forEach((card) => {
+      card.style.display = card.dataset.search.includes(q) ? "" : "none";
+    });
+  });
+</script>
+{% endblock %}

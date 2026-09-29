@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Companions — AI Companion{% endblock %}
+{% block content %}
+{% include "_nav.html" %}
+<div class="page">
+  <div class="row-between">
+    <h1>Your Companions</h1>
+    <a href="/companions/new" class="btn btn-primary">+ New companion</a>
+  </div>
+
+  {% if not companions %}
+    <p class="subtitle">No companions yet. Create your first one.</p>
+  {% else %}
+    <div class="companion-grid">
+      {% for c in companions %}
+      <a href="/chat/{{ c.id }}" class="glass companion-card" style="animation-delay: {{ loop.index0 * 0.04 }}s;">
+        <div class="avatar-orb">{{ c.name[0]|upper }}</div>
+        <h3>{{ c.name }}</h3>
+        <p>{{ c.persona_prompt }}</p>
+        {% if c.owner_id == user.id %}<span class="emotion-tag">owned by you</span>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

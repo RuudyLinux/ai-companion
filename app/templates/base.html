@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}AI Companion{% endblock %}</title>
+  <script>
+    // Runs before first paint so the page never flashes the wrong theme on load.
+    (function () {
+      try {
+        var saved = localStorage.getItem("theme");
+        var theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      } catch (err) {
+        document.documentElement.setAttribute("data-theme", "light");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version('static/css/style.css') }}">
+</head>
+<body>
+  {% block content %}{% endblock %}
+
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script src="/static/js/theme.js?v={{ asset_version('static/js/theme.js') }}"></script>
+  <script src="/static/js/app.js?v={{ asset_version('static/js/app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

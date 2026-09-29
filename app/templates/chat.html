@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}{{ companion.name }} — AI Companion{% endblock %}
+{% block content %}
+<div class="chat-shell" id="chat-shell">
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+  <aside class="sidebar glass" id="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-top-row">
+        <a href="/companions" class="btn btn-ghost btn-sm">← Companions</a>
+        <form action="/chat/{{ companion.id }}/new" method="post">
+          <button type="submit" class="btn btn-primary btn-sm">+ New</button>
+        </form>
+      </div>
+      <div class="sidebar-search">
+        <input type="text" id="sidebar-search-input" placeholder="Search chats...">
+      </div>
+      <div class="sidebar-tabs">
+        <div class="sidebar-tab active" data-tab="active">Chats</div>
+        <div class="sidebar-tab" data-tab="archived">Archived</div>
+      </div>
+    </div>
+    <div class="sidebar-list" id="sidebar-list">
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+    </div>
+  </aside>
+
+  <div class="chat-main">
+    <div class="chat-header">
+      <div class="chat-header-left">
+        <button type="button" class="icon-btn sidebar-mobile-toggle" id="sidebar-toggle" aria-label="Toggle chat list">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <h2>{{ companion.name }}</h2>
+      </div>
+      <div class="chat-header-actions">
+        <button type="button" class="icon-btn theme-toggle" data-theme-toggle title="Toggle theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <a href="/voices" class="btn btn-ghost btn-sm">🎙️ Voice library</a>
+      </div>
+    </div>
+
+    <div class="controls-row">
+      <label>Voice
+        <select id="voice-select">
+          {% for v in voices %}
+          <option value="{{ v.id }}" data-kind="{{ v.kind }}" data-preview="{{ v.preview_audio_path }}" {{ "selected" if v.id == user.default_voice_id else "" }}>{{ "⭐ " if v.kind == "cloned" else "" }}{{ v.name }} ({{ v.category }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Emotion / Style
+        <select id="effect-select">
+          <option value="auto" {{ "selected" if user.voice_auto_adaptive else "" }}>🪄 Auto (adapts to mood)</option>
+          <option value="" {{ "" if user.voice_auto_adaptive else "selected" }}>Neutral (no effect)</option>
+          <optgroup label="Emotion">
+            {% for e in emotions %}<option value="{{ e }}">{{ e|capitalize }}</option>{% endfor %}
+          </optgroup>
+          <optgroup label="Voice changer">
+            {% for s in styles %}<option value="{{ s }}">{{ s|replace("_", " ")|capitalize }}</option>{% endfor %}
+          </optgroup>
+        </select>
+      </label>
+      <label>Language
+        <select id="language-select">
+          <option value="auto">Auto-detect</option>
+          {% for lang in languages %}<option value="{{ lang }}">{{ lang }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="button" id="preview-voice-btn" class="preview-btn" title="Preview selected voice">▶ Preview</button>
+    </div>
+
+    <div class="status-indicator" id="typing-indicator">
+      <span class="typing-dots"><span></span><span></span><span></span></span> {{ companion.name }} is typing...
+    </div>
+    <div class="status-indicator" id="speaking-indicator">
+      <span class="waveform"><span></span><span></span><span></span><span></span><span></span></span> Speaking...
+    </div>
+
+    <div class="chat-messages" id="messages">
+      <div class="chat-messages-inner" id="messages-inner">
+        {% for m in messages %}
+          <div class="bubble {{ m.role }}" data-message-id="{{ m.id }}">
+            {{ m.content }}
+            {% if m.role == "assistant" %}
+            <div class="bubble-audio" data-audio-slot>
+              <button type="button" class="audio-btn" data-play-historical>🔊</button>
+            </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <button type="button" class="jump-to-latest" id="jump-to-latest">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      New messages
+    </button>
+
+    <form id="chat-form" class="chat-input-row">
+      <button type="button" id="mic-btn" class="mic-btn" title="Record a voice message">🎤</button>
+      <input type="text" id="chat-input" placeholder="Type a message, or use the mic..." autocomplete="off">
+      <button type="submit" id="send-btn" class="btn btn-primary">Send</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.CHAT_CONFIG = {
+    conversationId: "{{ conversation.id }}",
+    companionId: "{{ companion.id }}",
+    defaultVoiceId: {{ (user.default_voice_id | tojson) if user.default_voice_id else "null" }}
+  };
+</script>
+<script src="/static/js/chat.js?v={{ asset_version('static/js/chat.js') }}"></script>
+{% endblock %}

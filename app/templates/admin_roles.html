@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Manage Roles — AI Companion{% endblock %}
+{% block content %}
+{% include "_nav.html" %}
+<div class="page page-medium">
+  <h1>Manage roles</h1>
+
+  <div class="glass role-list">
+    {% for u in users %}
+    <form action="/admin/roles/update" method="post" class="user-row">
+      <input type="hidden" name="user_id" value="{{ u.id }}">
+      <div>
+        <div>{{ u.email }}</div>
+        <div class="emotion-tag">current: {{ u.role }}</div>
+      </div>
+      <div class="role-actions">
+        <select name="role" title="Role for {{ u.email }}" aria-label="Role for {{ u.email }}" {{ "disabled" if u.id == user.id else "" }}>
+          <option value="user" {{ "selected" if u.role == "user" else "" }}>user</option>
+          <option value="admin" {{ "selected" if u.role == "admin" else "" }}>admin</option>
+          <option value="super_admin" {{ "selected" if u.role == "super_admin" else "" }}>super_admin</option>
+        </select>
+        <button type="submit" class="btn btn-primary btn-sm" {{ "disabled" if u.id == user.id else "" }}>Save</button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

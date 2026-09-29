@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Sign up — AI Companion{% endblock %}
+{% block content %}
+{% include "_theme_toggle_floating.html" %}
+<div class="center-page">
+  <div class="glass card auth-card">
+    <h1>Sign up</h1>
+    <p class="subtitle">Create your account.</p>
+
+    {% if error %}<div class="error-box">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/signup">
+      <div class="field">
+        <label for="signup-email">Email</label>
+        <input type="email" id="signup-email" name="email" required autofocus>
+      </div>
+      <div class="field">
+        <label for="signup-password">Password (min 6 characters)</label>
+        <input type="password" id="signup-password" name="password" required minlength="6">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Create account</button>
+    </form>
+
+    <p class="subtitle auth-footer">
+      Already have an account? <a href="/login" class="plain">Log in</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

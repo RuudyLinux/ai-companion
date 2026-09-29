@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+data/*.db
+data/inworld_voice_cache.json
+models_store/*.joblib
+.pytest_cache/
+server.log
+server.err.log
+.server.pid

@@ -1,0 +1,12 @@
+# Datasets and notebooks stay local
+Dataset/
+
+# Audio samples
+*.wav
+*.mp3
+
+# Local env / secrets
+.env
+venv/
+__pycache__/
+.claude/settings.local.json

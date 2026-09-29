@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}New Companion — AI Companion{% endblock %}
+{% block content %}
+{% include "_nav.html" %}
+<div class="page page-narrow">
+  <h1>Create a companion</h1>
+  <p class="subtitle">Give it a name and personality — the rest happens in chat.</p>
+
+  {% if error %}<div class="error-box">{{ error }}</div>{% endif %}
+
+  <form method="post" action="/companions/new" class="glass card">
+    <div class="field">
+      <label for="companion-name">Name</label>
+      <input type="text" id="companion-name" name="name" required placeholder="e.g. Nova">
+    </div>
+    <div class="field">
+      <label for="companion-description">Personality description</label>
+      <textarea id="companion-description" name="description" required rows="5" placeholder="Describe tone, interests, how they talk, backstory..."></textarea>
+    </div>
+    <div class="checkbox-row mb-lg">
+      <input type="checkbox" name="is_public" id="is_public">
+      <label for="is_public">Make this companion public (others can chat with it)</label>
+    </div>
+    <button type="submit" class="btn btn-primary btn-block">Create &amp; start chatting</button>
+  </form>
+</div>
+{% endblock %}
