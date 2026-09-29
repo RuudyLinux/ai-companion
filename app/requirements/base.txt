@@ -1,0 +1,26 @@
+# Core web app: runs on any OS, CPU only. Voice engine "inworld" works with just this + stt.txt.
+fastapi==0.141.1
+starlette==1.3.1
+uvicorn[standard]==0.52.1
+pydantic==2.13.4
+email-validator==2.3.0
+python-multipart==0.0.32
+python-dotenv==1.2.2
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+SQLAlchemy==2.0.51
+alembic==1.20.0
+bcrypt==5.0.0
+python-jose[cryptography]==3.5.0
+openai==2.52.0
+httpx==0.28.1
+requests==2.34.2
+langdetect==1.0.9
+# emotion classifier (TF-IDF + logistic regression) and audio DSP/decoding
+scikit-learn==1.9.0
+joblib==1.5.3
+numpy==2.4.6
+scipy==1.17.1
+librosa==0.11.0
+soundfile==0.14.0
+av==18.0.0

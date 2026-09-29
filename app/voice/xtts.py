@@ -9,8 +9,6 @@ from pathlib import Path
 
 os.environ.setdefault("COQUI_TOS_AGREED", "1")
 
-CLONE_REFERENCE_WAV = r"D:/#practicals/AI companion/Helly.wav"
-
 SUPPORTED_LANGUAGES = {"en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"}
 
 
@@ -49,5 +47,3 @@ def synthesize(
 
     model.tts_to_file(**kwargs)
 
-
-from voice.audio_utils import audio_duration_seconds  # noqa: E402,F401  (kept for backward-compat imports)

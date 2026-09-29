@@ -18,7 +18,39 @@
   </div>
 
   {% if user.role == "super_admin" %}
-  <a href="/admin/roles" class="btn btn-primary">Manage user roles</a>
+  <div class="row-between mb-lg">
+    <a href="/admin/roles" class="btn btn-primary">Manage user roles</a>
+    <a href="/admin/audit" class="btn btn-ghost">Audit log</a>
+  </div>
   {% endif %}
+
+  <h2>Public companions</h2>
+  <div class="glass role-list">
+    {% for c in public_companions %}
+    <div class="user-row">
+      <div>
+        <div>{{ c.name }}</div>
+        <div class="emotion-tag">owner {{ c.owner_id[:8] }} · {{ c.created_at.strftime("%Y-%m-%d") if c.created_at else "" }}</div>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm unpublish" data-companion-id="{{ c.id }}">Unpublish</button>
+    </div>
+    {% else %}
+    <p class="empty-hint">No public companions.</p>
+    {% endfor %}
+  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll(".unpublish").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Make this companion private? Only its owner will be able to use it.")) return;
+      const res = await fetch(`/api/admin/companions/${btn.dataset.companionId}/unpublish`, { method: "POST" });
+      if (!res.ok) return window.showToast(await window.apiErrorMessage(res, "Couldn't unpublish."), "error");
+      btn.closest(".user-row").remove();
+      window.showToast("Companion unpublished.", "success");
+    });
+  });
+</script>
 {% endblock %}

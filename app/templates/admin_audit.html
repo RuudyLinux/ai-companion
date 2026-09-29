@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — AI Companion{% endblock %}
+{% block content %}
+{% include "_nav.html" %}
+<div class="page page-wide">
+  <h1>Audit log</h1>
+  <p class="subtitle">The 200 most recent administrative actions.</p>
+  <div class="glass card">
+    <table class="audit-table">
+      <thead>
+        <tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Before</th><th>After</th></tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+        <tr>
+          <td>{{ e.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+          <td>{{ e.actor_email or "(deleted user)" }}</td>
+          <td>{{ e.action }}</td>
+          <td>{{ e.target_type }} <code>{{ e.target_id or "" }}</code></td>
+          <td><code>{{ e.before | tojson if e.before else "" }}</code></td>
+          <td><code>{{ e.after | tojson if e.after else "" }}</code></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="empty-hint">No audit entries yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

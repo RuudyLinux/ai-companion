@@ -3,7 +3,7 @@ from voice import xtts
 
 
 class XTTSEngine(VoiceEngine):
-    name = "development"
+    name = "xtts"
 
     def synthesize(self, text, out_path, language="en", speaker_wav=None, speaker_name=None):
         xtts.synthesize(text, out_path, language=language, speaker_wav=speaker_wav, speaker_name=speaker_name)

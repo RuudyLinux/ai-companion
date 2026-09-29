@@ -4,10 +4,13 @@
 {% include "_nav.html" %}
 <div class="page page-medium">
   <h1>Manage roles</h1>
+  {% set role_errors = {"self": "You can't change your own role.", "invalid": "Invalid role change.", "not-found": "That user no longer exists."} %}
+  {% if request.query_params.get("error") in role_errors %}<div class="error-box" role="alert">{{ role_errors[request.query_params.get("error")] }}</div>{% endif %}
 
   <div class="glass role-list">
     {% for u in users %}
     <form action="/admin/roles/update" method="post" class="user-row">
+      {{ csrf_input() }}
       <input type="hidden" name="user_id" value="{{ u.id }}">
       <div>
         <div>{{ u.email }}</div>

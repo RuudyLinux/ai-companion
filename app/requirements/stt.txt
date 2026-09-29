@@ -1,0 +1,3 @@
+# Local speech-to-text (runs in a child process, see voice/stt_runner.py)
+faster-whisper==1.2.1
+ctranslate2==4.8.1

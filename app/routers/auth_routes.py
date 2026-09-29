@@ -1,13 +1,54 @@
-from fastapi import APIRouter, Depends, Request, Form
+from urllib.parse import quote_plus
+
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
+from pydantic import ValidationError
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from auth import (
+    clear_session_cookie,
+    create_session,
+    current_session_id,
+    get_current_user,
+    hash_password,
+    revoke_session,
+    set_session_cookie,
+    verify_password_or_dummy,
+)
+from core.rate_limit import check_rate_limit, rate_limit
 from database import get_db
 from models import User
-from auth import hash_password, verify_password, create_session_token, get_current_user, COOKIE_NAME
+from schemas import LoginRequest, SignupRequest
 from templating import templates
 
 router = APIRouter()
+
+
+def _redirect_with_error(path: str, message: str) -> RedirectResponse:
+    return RedirectResponse(f"{path}?error={quote_plus(message)}", status_code=303)
+
+
+def _first_error(exc: ValidationError) -> str:
+    err = exc.errors()[0]
+    field = err["loc"][0] if err.get("loc") else "input"
+    if field == "email":
+        return "Please enter a valid email address."
+    if field == "password":
+        return err["msg"].replace("String", "Password").replace("Value error, ", "")
+    return "Invalid input."
+
+
+def _signed_in_response(db: Session, user: User, request: Request) -> RedirectResponse:
+    # a fresh session id on every login: any pre-login session value becomes useless
+    old_sid = current_session_id(request)
+    if old_sid:
+        revoke_session(db, old_sid)
+    token = create_session(db, user, request)
+    response = RedirectResponse("/companions", status_code=303)
+    set_session_cookie(response, token)
+    return response
 
 
 @router.get("/login")
@@ -17,21 +58,25 @@ def login_page(request: Request, error: str | None = None, message: str | None =
     return templates.TemplateResponse(request, "login.html", {"error": error, "message": message})
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(rate_limit("login"))])
 def login_submit(
     request: Request,
-    email: str = Form(...),
-    password: str = Form(...),
+    email: str = Form(..., max_length=320),
+    password: str = Form(..., max_length=256),
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.hashed_password):
-        return RedirectResponse("/login?error=Invalid+email+or+password", status_code=303)
+    try:
+        creds = LoginRequest(email=email, password=password)
+    except ValidationError:
+        return _redirect_with_error("/login", "Invalid email or password")
 
-    token = create_session_token(user.id)
-    response = RedirectResponse("/companions", status_code=303)
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7)
-    return response
+    # per-account limit on top of the per-IP one, against distributed guessing
+    check_rate_limit("login", f"email:{creds.email}")
+
+    user = db.query(User).filter(func.lower(User.email) == creds.email).first()
+    if not verify_password_or_dummy(creds.password, user):
+        return _redirect_with_error("/login", "Invalid email or password")
+    return _signed_in_response(db, user, request)
 
 
 @router.get("/signup")
@@ -41,33 +86,37 @@ def signup_page(request: Request, error: str | None = None, db: Session = Depend
     return templates.TemplateResponse(request, "signup.html", {"error": error})
 
 
-@router.post("/signup")
+@router.post("/signup", dependencies=[Depends(rate_limit("signup"))])
 def signup_submit(
     request: Request,
-    email: str = Form(...),
-    password: str = Form(...),
+    email: str = Form(..., max_length=320),
+    password: str = Form(..., max_length=256),
     db: Session = Depends(get_db),
 ):
-    if len(password) < 6:
-        return RedirectResponse("/signup?error=Password+must+be+at+least+6+characters", status_code=303)
+    try:
+        data = SignupRequest(email=email, password=password)
+    except ValidationError as exc:
+        return _redirect_with_error("/signup", _first_error(exc))
 
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
-        return RedirectResponse("/signup?error=An+account+with+that+email+already+exists", status_code=303)
+    if db.query(User).filter(func.lower(User.email) == data.email).first():
+        return _redirect_with_error("/signup", "An account with that email already exists")
 
-    user = User(email=email, hashed_password=hash_password(password))
+    user = User(email=data.email, hashed_password=hash_password(data.password))
     db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    token = create_session_token(user.id)
-    response = RedirectResponse("/companions", status_code=303)
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 7)
-    return response
+    try:
+        db.commit()
+    except IntegrityError:  # two signups racing for the same email
+        db.rollback()
+        return _redirect_with_error("/signup", "An account with that email already exists")
+    return _signed_in_response(db, user, request)
 
 
 @router.post("/logout")
-def logout():
+def logout(request: Request, db: Session = Depends(get_db)):
+    session_id = current_session_id(request)
+    if session_id:
+        revoke_session(db, session_id)
+        db.commit()
     response = RedirectResponse("/login", status_code=303)
-    response.delete_cookie(COOKIE_NAME)
+    clear_session_cookie(response)
     return response

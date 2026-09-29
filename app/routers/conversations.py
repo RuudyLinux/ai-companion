@@ -1,19 +1,20 @@
-from datetime import datetime
-
-from fastapi import APIRouter, Depends, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Conversation, Message, Companion, User
 from auth import require_user_api
-from schemas import RenameRequest, FlagRequest
+from core.access import get_conversation_for_user
+from database import get_db
+from models import Conversation, Message, User, as_utc
+from privacy.service import delete_conversations
+from schemas import FlagRequest, RenameRequest
 
 router = APIRouter()
 
 
 def _conversation_summary(c: Conversation) -> dict:
+    created = as_utc(c.created_at)
+    updated = as_utc(c.updated_at) or created
     return {
         "id": c.id,
         "title": c.title or "New conversation",
@@ -21,102 +22,66 @@ def _conversation_summary(c: Conversation) -> dict:
         "companion_id": c.companion_id,
         "pinned": c.pinned,
         "archived": c.archived,
-        "created_at": c.created_at.isoformat(),
-        "updated_at": c.updated_at.isoformat() if c.updated_at else c.created_at.isoformat(),
+        "created_at": created.isoformat(),
+        "updated_at": updated.isoformat(),
     }
 
 
 @router.get("/api/conversations")
-def list_conversations(
-    archived: bool = False, user: User = Depends(require_user_api), db: Session = Depends(get_db)
-):
+def list_conversations(archived: bool = False, user: User = Depends(require_user_api), db: Session = Depends(get_db)):
     conversations = (
         db.query(Conversation)
         .filter(Conversation.user_id == user.id, Conversation.archived.is_(archived))
         .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
+        .limit(500)
         .all()
     )
-    return JSONResponse([_conversation_summary(c) for c in conversations])
+    return [_conversation_summary(c) for c in conversations]
 
 
 @router.post("/api/conversations/{conversation_id}/rename")
 def rename_conversation(
-    conversation_id: str,
-    payload: RenameRequest,
-    user: User = Depends(require_user_api),
-    db: Session = Depends(get_db),
+    conversation_id: str, payload: RenameRequest, user: User = Depends(require_user_api), db: Session = Depends(get_db)
 ):
-    conversation = (
-        db.query(Conversation).filter(Conversation.id == conversation_id, Conversation.user_id == user.id).first()
-    )
-    if not conversation:
-        return JSONResponse({"error": "Not found"}, status_code=404)
-    conversation.title = payload.title.strip()[:120] or conversation.title
+    conversation = get_conversation_for_user(db, user, conversation_id)
+    conversation.title = payload.title
     db.commit()
-    return JSONResponse(_conversation_summary(conversation))
+    return _conversation_summary(conversation)
 
 
 @router.post("/api/conversations/{conversation_id}/pin")
 def pin_conversation(
-    conversation_id: str,
-    payload: FlagRequest,
-    user: User = Depends(require_user_api),
-    db: Session = Depends(get_db),
+    conversation_id: str, payload: FlagRequest, user: User = Depends(require_user_api), db: Session = Depends(get_db)
 ):
-    conversation = (
-        db.query(Conversation).filter(Conversation.id == conversation_id, Conversation.user_id == user.id).first()
-    )
-    if not conversation:
-        return JSONResponse({"error": "Not found"}, status_code=404)
+    conversation = get_conversation_for_user(db, user, conversation_id)
     conversation.pinned = payload.value
     db.commit()
-    return JSONResponse(_conversation_summary(conversation))
+    return _conversation_summary(conversation)
 
 
 @router.post("/api/conversations/{conversation_id}/archive")
 def archive_conversation(
-    conversation_id: str,
-    payload: FlagRequest,
-    user: User = Depends(require_user_api),
-    db: Session = Depends(get_db),
+    conversation_id: str, payload: FlagRequest, user: User = Depends(require_user_api), db: Session = Depends(get_db)
 ):
-    conversation = (
-        db.query(Conversation).filter(Conversation.id == conversation_id, Conversation.user_id == user.id).first()
-    )
-    if not conversation:
-        return JSONResponse({"error": "Not found"}, status_code=404)
+    conversation = get_conversation_for_user(db, user, conversation_id)
     conversation.archived = payload.value
     db.commit()
-    return JSONResponse(_conversation_summary(conversation))
+    return _conversation_summary(conversation)
 
 
 @router.delete("/api/conversations/{conversation_id}")
-def delete_conversation(
-    conversation_id: str, user: User = Depends(require_user_api), db: Session = Depends(get_db)
-):
-    conversation = (
-        db.query(Conversation).filter(Conversation.id == conversation_id, Conversation.user_id == user.id).first()
-    )
-    if not conversation:
-        return JSONResponse({"error": "Not found"}, status_code=404)
-    db.delete(conversation)
-    db.commit()
-    return JSONResponse({"ok": True})
+def delete_conversation(conversation_id: str, user: User = Depends(require_user_api), db: Session = Depends(get_db)):
+    """Deletes the conversation, its messages, generated audio rows and the audio files."""
+    delete_conversations(db, [get_conversation_for_user(db, user, conversation_id)])
+    return {"ok": True}
 
 
 @router.get("/api/conversations/{conversation_id}/export")
-def export_conversation(
-    conversation_id: str, user: User = Depends(require_user_api), db: Session = Depends(get_db)
-):
-    conversation = (
-        db.query(Conversation).filter(Conversation.id == conversation_id, Conversation.user_id == user.id).first()
-    )
-    if not conversation:
-        return JSONResponse({"error": "Not found"}, status_code=404)
-
+def export_conversation(conversation_id: str, user: User = Depends(require_user_api), db: Session = Depends(get_db)):
+    conversation = get_conversation_for_user(db, user, conversation_id)
     messages = (
         db.query(Message)
-        .filter(Message.conversation_id == conversation_id)
+        .filter(Message.conversation_id == conversation.id, Message.content != "")
         .order_by(Message.created_at.asc())
         .all()
     )
@@ -126,27 +91,35 @@ def export_conversation(
         speaker = "You" if m.role == "user" else conversation.companion.name
         lines.append(f"[{m.created_at.strftime('%Y-%m-%d %H:%M')}] {speaker}: {m.content}")
 
-    content = "\n".join(lines)
-    filename = f"conversation-{conversation_id[:8]}.txt"
+    filename = f"conversation-{conversation.id[:8]}.txt"
     return Response(
-        content=content,
-        media_type="text/plain",
+        content="\n".join(lines),
+        media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
 @router.get("/api/search")
-def search(q: str, user: User = Depends(require_user_api), db: Session = Depends(get_db)):
-    if not q or not q.strip():
-        return JSONResponse([])
-
-    like_pattern = f"%{q.strip()}%"
+def search(
+    q: str = Query("", max_length=200), user: User = Depends(require_user_api), db: Session = Depends(get_db)
+):
+    term = q.strip()
+    if not term:
+        return []
+    # escape LIKE wildcards so "%" or "_" in a query are matched literally
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like_pattern = f"%{escaped}%"
 
     matches = (
         db.query(Message, Conversation)
         .join(Conversation, Message.conversation_id == Conversation.id)
         .filter(Conversation.user_id == user.id)
-        .filter(or_(Message.content.ilike(like_pattern), Conversation.title.ilike(like_pattern)))
+        .filter(
+            or_(
+                Message.content.ilike(like_pattern, escape="\\"),
+                Conversation.title.ilike(like_pattern, escape="\\"),
+            )
+        )
         .order_by(Message.created_at.desc())
         .limit(50)
         .all()
@@ -155,7 +128,7 @@ def search(q: str, user: User = Depends(require_user_api), db: Session = Depends
     results = []
     for message, conversation in matches:
         content = message.content
-        idx = content.lower().find(q.strip().lower())
+        idx = content.lower().find(term.lower())
         snippet = content if idx == -1 else content[max(0, idx - 40) : idx + 80]
         results.append(
             {
@@ -163,9 +136,8 @@ def search(q: str, user: User = Depends(require_user_api), db: Session = Depends
                 "companion_name": conversation.companion.name,
                 "title": conversation.title or "New conversation",
                 "message_id": message.id,
-                "snippet": snippet,
-                "created_at": message.created_at.isoformat(),
+                "snippet": snippet[:200],
+                "created_at": as_utc(message.created_at).isoformat(),
             }
         )
-
-    return JSONResponse(results)
+    return results
