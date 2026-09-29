@@ -6,14 +6,11 @@ the (subprocess-isolated) local Whisper STT and cache the result so cloning stil
 needs a reference wav from the caller's point of view, same as XTTS.
 """
 
-import subprocess
-import sys
 from functools import lru_cache
 from pathlib import Path
 
 from voice.engine_base import VoiceEngine
-
-TRANSCRIBE_CLI = Path(__file__).resolve().parent.parent.parent / "scripts" / "transcribe_cli.py"
+from voice.stt_runner import run_transcription
 
 # F5-TTS's officially supported languages (English + Chinese trained; community
 # checkpoints exist for more, but the default F5TTS_v1_Base model covers these two well).
@@ -26,16 +23,15 @@ def _model():
     return F5TTS(device="cuda")
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=32)
 def _ref_text_for(speaker_wav: str) -> str:
-    result = subprocess.run(
-        [sys.executable, str(TRANSCRIBE_CLI), speaker_wav], capture_output=True, timeout=120
-    )
-    return result.stdout.decode("utf-8", errors="replace").strip()
+    # raises on failure, and lru_cache never caches exceptions, so a transient STT
+    # failure is retried next time instead of silently pinning an empty transcript
+    return run_transcription(speaker_wav)["text"]
 
 
 class F5TTSEngine(VoiceEngine):
-    name = "offline_production"
+    name = "f5tts"
 
     def synthesize(self, text, out_path, language="en", speaker_wav=None, speaker_name=None):
         if not speaker_wav:

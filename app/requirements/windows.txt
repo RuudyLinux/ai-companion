@@ -1,0 +1,2 @@
+# Windows developer machine with an NVIDIA GPU (the original development setup)
+-r gpu.txt

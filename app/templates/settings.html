@@ -4,6 +4,15 @@
 {% include "_nav.html" %}
 <div class="page page-narrow">
   <h1>Settings</h1>
+  {% set notices = {
+    "saved": ("info-box", "Saved."),
+    "invalid-voice-preferences": ("error-box", "Those voice preferences are out of range."),
+    "invalid-retention": ("error-box", "Retention must be between 1 and 3650 days, or empty to keep everything."),
+    "invalid_password": ("error-box", "Password is incorrect — your account was not deleted."),
+    "confirm-required": ("error-box", "Type DELETE to confirm account deletion."),
+    "last_super_admin": ("error-box", "You are the last super admin. Promote someone else before deleting your account."),
+  } %}
+  {% if notice and notice in notices %}<div class="{{ notices[notice][0] }}" role="status">{{ notices[notice][1] }}</div>{% endif %}
 
   <div class="glass card mb-lg">
     <div class="kv-row">
@@ -25,6 +34,7 @@
       empathetically. Turn this off any time — nothing is analyzed or stored once disabled.
     </p>
     <form action="/settings/emotion-toggle" method="post">
+      {{ csrf_input() }}
       <input type="hidden" name="enabled" value="{{ 'false' if user.emotion_tracking_enabled else 'true' }}">
       <button type="submit" class="btn {{ 'btn-ghost' if user.emotion_tracking_enabled else 'btn-primary' }}">
         {{ "Disable emotional awareness" if user.emotion_tracking_enabled else "Enable emotional awareness" }}
@@ -40,6 +50,7 @@
       time. You can still pick a specific emotion or voice-changer style manually per message in chat.
     </p>
     <form action="/settings/voice-auto-adaptive-toggle" method="post" class="mb-lg">
+      {{ csrf_input() }}
       <input type="hidden" name="enabled" value="{{ 'false' if user.voice_auto_adaptive else 'true' }}">
       <button type="submit" class="btn {{ 'btn-ghost' if user.voice_auto_adaptive else 'btn-primary' }}">
         {{ "Disable auto-adaptive voice" if user.voice_auto_adaptive else "Enable auto-adaptive voice" }}
@@ -47,6 +58,7 @@
     </form>
 
     <form action="/settings/voice-preferences" method="post">
+      {{ csrf_input() }}
       <div class="field">
         <label for="default-voice">Default voice</label>
         <select id="default-voice" name="default_voice_id">
@@ -91,5 +103,118 @@
       <button type="submit" class="btn btn-primary">Save voice preferences</button>
     </form>
   </div>
+  <div class="glass settings-row">
+    <h3>Privacy &amp; memory</h3>
+    <p>
+      Long-term memory lets your companion remember durable things you tell it (your name, preferences, important
+      events) across conversations. Only facts are kept — not every message — and you can review or delete them below.
+    </p>
+    <form action="/settings/privacy" method="post">
+      {{ csrf_input() }}
+      <div class="checkbox-row">
+        <input type="checkbox" id="memory-enabled" name="memory_enabled" value="true" {{ "checked" if user.memory_enabled else "" }}>
+        <label for="memory-enabled">Remember things about me across conversations</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="store-voice" name="store_voice_audio" value="true" {{ "checked" if user.store_voice_audio else "" }}>
+        <label for="store-voice">Keep generated voice audio (off: clips are deleted about an hour after they're made)</label>
+      </div>
+      <div class="field">
+        <label for="retention">Delete conversations after this many days of inactivity (empty = keep until I delete them)</label>
+        <input type="number" id="retention" name="data_retention_days" min="1" max="3650" value="{{ user.data_retention_days or '' }}">
+      </div>
+      <button type="submit" class="btn btn-primary">Save privacy settings</button>
+    </form>
+  </div>
+
+  <div class="glass settings-row">
+    <h3>What your companion remembers <span class="emotion-tag" id="memory-count">{{ memory_count }} saved</span></h3>
+    <div id="memory-list"><p class="empty-hint">Loading…</p></div>
+    <div class="row-between mt-lg">
+      <button type="button" class="btn btn-ghost btn-sm" id="delete-memories">Delete all memories</button>
+    </div>
+  </div>
+
+  <div class="glass settings-row">
+    <h3>Your data</h3>
+    <p>Download everything stored about you (account, companions, conversations, memories, emotional history) as JSON.</p>
+    <div class="row-between">
+      <a class="btn btn-primary" href="/api/me/export">Export my data</a>
+      <button type="button" class="btn btn-ghost" id="delete-conversations">Delete all conversations</button>
+    </div>
+  </div>
+
+  <div class="glass settings-row danger-zone">
+    <h3>Delete account</h3>
+    <p>Permanently deletes your account, companions, conversations, memories, cloned voices and generated audio. This cannot be undone.</p>
+    <form action="/settings/delete-account" method="post" onsubmit="return confirm('Delete your account and all data permanently?');">
+      {{ csrf_input() }}
+      <div class="field">
+        <label for="delete-password">Password</label>
+        <input type="password" id="delete-password" name="password" required autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label for="delete-confirm">Type DELETE to confirm</label>
+        <input type="text" id="delete-confirm" name="confirm" required pattern="DELETE" autocomplete="off">
+      </div>
+      <button type="submit" class="btn btn-danger">Delete my account</button>
+    </form>
+  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const list = document.getElementById("memory-list");
+    const countEl = document.getElementById("memory-count");
+    const esc = window.escapeHtml;
+
+    async function loadMemories() {
+      try {
+        const res = await fetch("/api/me/memories");
+        if (!res.ok) throw new Error(await window.apiErrorMessage(res, "Couldn't load memories."));
+        const items = await res.json();
+        countEl.textContent = `${items.length} saved`;
+        if (!items.length) {
+          list.innerHTML = '<p class="empty-hint">Nothing remembered yet.</p>';
+          return;
+        }
+        list.innerHTML = "";
+        items.forEach((m) => {
+          const row = document.createElement("div");
+          row.className = "memory-row";
+          row.innerHTML = `<div><span class="emotion-tag">${esc(m.type)}</span> ${esc(m.content)}</div>
+            <button type="button" class="btn btn-ghost btn-sm" aria-label="Forget this">Forget</button>`;
+          row.querySelector("button").addEventListener("click", async () => {
+            const del = await fetch(`/api/me/memories/${m.id}`, { method: "DELETE" });
+            if (!del.ok) return window.showToast(await window.apiErrorMessage(del, "Couldn't delete."), "error");
+            loadMemories();
+          });
+          list.appendChild(row);
+        });
+      } catch (err) {
+        list.innerHTML = `<p class="empty-hint">${esc(err.message)}</p>`;
+      }
+    }
+
+    document.getElementById("delete-memories").addEventListener("click", async () => {
+      if (!confirm("Delete everything your companion remembers about you?")) return;
+      const res = await fetch("/api/me/memories", { method: "DELETE" });
+      if (!res.ok) return window.showToast(await window.apiErrorMessage(res, "Couldn't delete."), "error");
+      window.showToast("All memories deleted.", "success");
+      loadMemories();
+    });
+
+    document.getElementById("delete-conversations").addEventListener("click", async () => {
+      if (!confirm("Delete ALL conversations and their voice messages permanently?")) return;
+      const res = await fetch("/api/me/conversations", { method: "DELETE" });
+      if (!res.ok) return window.showToast(await window.apiErrorMessage(res, "Couldn't delete."), "error");
+      const data = await res.json();
+      window.showToast(`${data.deleted} conversations deleted.`, "success");
+    });
+
+    loadMemories();
+  })();
+</script>
 {% endblock %}

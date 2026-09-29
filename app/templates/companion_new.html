@@ -9,13 +9,14 @@
   {% if error %}<div class="error-box">{{ error }}</div>{% endif %}
 
   <form method="post" action="/companions/new" class="glass card">
+    {{ csrf_input() }}
     <div class="field">
       <label for="companion-name">Name</label>
-      <input type="text" id="companion-name" name="name" required placeholder="e.g. Nova">
+      <input type="text" id="companion-name" name="name" required maxlength="80" placeholder="e.g. Nova">
     </div>
     <div class="field">
       <label for="companion-description">Personality description</label>
-      <textarea id="companion-description" name="description" required rows="5" placeholder="Describe tone, interests, how they talk, backstory..."></textarea>
+      <textarea id="companion-description" name="description" required maxlength="4000" rows="5" placeholder="Describe tone, interests, how they talk, backstory..."></textarea>
     </div>
     <div class="checkbox-row mb-lg">
       <input type="checkbox" name="is_public" id="is_public">

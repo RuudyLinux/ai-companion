@@ -4,7 +4,7 @@ Voice engine abstraction — one interface, three swappable backends:
   - offline_production: F5-TTS (local GPU, different open model, also free)
   - cloud_production:  Inworld AI (cloud API, best quality, costs money, needs a key)
 
-Callers (routers/chat.py, seed scripts) talk to whichever engine is active via
+Callers (voice/service.py, seed scripts) talk to whichever engine is active via
 get_engine() in voice/engine.py — they never import xtts/f5tts/inworld directly.
 """
 
@@ -31,6 +31,12 @@ class VoiceEngine(ABC):
     ) -> None:
         """Either speaker_wav (clone from a reference file) or speaker_name (a builtin/preset voice) must be given."""
         raise NotImplementedError
+
+    def register_clone(self, reference_wav: str, language: str, display_name: str) -> str | None:
+        """Engines with server-side cloning (Inworld) register the reference once and return
+        the provider voice id to store on the Voice row. Local engines return None: they
+        re-read the reference file on every synthesize() call instead."""
+        return None
 
     @abstractmethod
     def builtin_speakers(self) -> list[str]:

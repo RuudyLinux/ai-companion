@@ -8,6 +8,7 @@
       <div class="sidebar-top-row">
         <a href="/companions" class="btn btn-ghost btn-sm">← Companions</a>
         <form action="/chat/{{ companion.id }}/new" method="post">
+          {{ csrf_input() }}
           <button type="submit" class="btn btn-primary btn-sm">+ New</button>
         </form>
       </div>
@@ -15,8 +16,8 @@
         <input type="text" id="sidebar-search-input" placeholder="Search chats...">
       </div>
       <div class="sidebar-tabs">
-        <div class="sidebar-tab active" data-tab="active">Chats</div>
-        <div class="sidebar-tab" data-tab="archived">Archived</div>
+        <button type="button" class="sidebar-tab active" data-tab="active" role="tab" aria-selected="true">Chats</button>
+        <button type="button" class="sidebar-tab" data-tab="archived" role="tab" aria-selected="false">Archived</button>
       </div>
     </div>
     <div class="sidebar-list" id="sidebar-list">
@@ -47,7 +48,7 @@
       <label>Voice
         <select id="voice-select">
           {% for v in voices %}
-          <option value="{{ v.id }}" data-kind="{{ v.kind }}" data-preview="{{ v.preview_audio_path }}" {{ "selected" if v.id == user.default_voice_id else "" }}>{{ "⭐ " if v.kind == "cloned" else "" }}{{ v.name }} ({{ v.category }})</option>
+          <option value="{{ v.id }}" data-kind="{{ v.kind }}" {{ "selected" if v.id == user.default_voice_id else "" }}>{{ "⭐ " if v.kind == "cloned" else "" }}{{ v.name }} ({{ v.category }})</option>
           {% endfor %}
         </select>
       </label>
@@ -72,26 +73,38 @@
       <button type="button" id="preview-voice-btn" class="preview-btn" title="Preview selected voice">▶ Preview</button>
     </div>
 
-    <div class="status-indicator" id="typing-indicator">
+    <div class="status-indicator" id="typing-indicator" role="status">
       <span class="typing-dots"><span></span><span></span><span></span></span> {{ companion.name }} is typing...
     </div>
     <div class="status-indicator" id="speaking-indicator">
       <span class="waveform"><span></span><span></span><span></span><span></span><span></span></span> Speaking...
     </div>
 
-    <div class="chat-messages" id="messages">
+    <div class="chat-messages" id="messages" aria-live="polite">
       <div class="chat-messages-inner" id="messages-inner">
         {% for m in messages %}
-          <div class="bubble {{ m.role }}" data-message-id="{{ m.id }}">
-            {{ m.content }}
+          <div class="bubble {{ m.role }}{{ ' failed' if m.status == 'failed' else '' }}" data-message-id="{{ m.id }}" data-status="{{ m.status }}">
+            <span class="bubble-text">{{ m.content }}</span>
             {% if m.role == "assistant" %}
-            <div class="bubble-audio" data-audio-slot>
-              <button type="button" class="audio-btn" data-play-historical>🔊</button>
-            </div>
+              {% if m.status == "failed" %}
+              <div class="bubble-note" role="alert">This reply failed.</div>
+              {% elif m.status == "cancelled" %}
+              <div class="bubble-note" role="status">Stopped.</div>
+              {% elif m.status in ("pending", "streaming") %}
+              <div class="bubble-note" role="status">Still generating — refresh in a moment.</div>
+              {% endif %}
+              {% if m.content %}
+              <div class="bubble-audio" data-audio-slot>
+                <button type="button" class="audio-btn" data-play-historical aria-label="Play this reply aloud">🔊</button>
+              </div>
+              {% endif %}
             {% endif %}
           </div>
         {% endfor %}
       </div>
+    </div>
+    <div class="reply-actions" id="reply-actions" hidden>
+      <button type="button" class="btn btn-ghost btn-sm" id="regenerate-btn">↻ Regenerate</button>
     </div>
     <button type="button" class="jump-to-latest" id="jump-to-latest">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
@@ -99,9 +112,10 @@
     </button>
 
     <form id="chat-form" class="chat-input-row">
-      <button type="button" id="mic-btn" class="mic-btn" title="Record a voice message">🎤</button>
-      <input type="text" id="chat-input" placeholder="Type a message, or use the mic..." autocomplete="off">
+      <button type="button" id="mic-btn" class="mic-btn" title="Record a voice message" aria-label="Record a voice message">🎤</button>
+      <input type="text" id="chat-input" placeholder="Type a message, or use the mic..." autocomplete="off" maxlength="4000" aria-label="Message">
       <button type="submit" id="send-btn" class="btn btn-primary">Send</button>
+      <button type="button" id="stop-btn" class="btn btn-ghost" hidden>■ Stop</button>
     </form>
   </div>
 </div>
@@ -110,10 +124,14 @@
 {% block scripts %}
 <script>
   window.CHAT_CONFIG = {
-    conversationId: "{{ conversation.id }}",
-    companionId: "{{ companion.id }}",
+    conversationId: {{ conversation.id | tojson }},
+    companionId: {{ companion.id | tojson }},
     defaultVoiceId: {{ (user.default_voice_id | tojson) if user.default_voice_id else "null" }}
   };
 </script>
-<script src="/static/js/chat.js?v={{ asset_version('static/js/chat.js') }}"></script>
+{%- set chat_modules = ["chat", "conversations", "sidebar", "streaming", "stt", "voice", "audio-player"] %}
+<script type="importmap">
+  {"imports": { {%- for name in chat_modules %}"/static/js/chat/{{ name }}.js": "/static/js/chat/{{ name }}.js?v={{ asset_version('static/js/chat/' ~ name ~ '.js') }}"{{ "," if not loop.last }}{% endfor %} }}
+</script>
+<script type="module" src="/static/js/chat/chat.js"></script>
 {% endblock %}

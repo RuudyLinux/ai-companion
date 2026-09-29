@@ -433,6 +433,8 @@ input[type="range"]::-moz-range-thumb {
 .sidebar-tabs { display: flex; gap: 0.3rem; padding: 0 0.9rem; }
 .sidebar-tab {
   flex: 1;
+  background: none;
+  font: inherit;
   text-align: center;
   padding: 0.4rem;
   font-size: 0.78rem;
@@ -540,7 +542,7 @@ input[type="range"]::-moz-range-thumb {
   max-width: 80%;
   font-size: 0.95rem;
   line-height: 1.55;
-  white-space: pre-wrap;
+  white-space: normal;
   animation: slide-in-right 0.32s var(--ease) both;
 }
 
@@ -835,3 +837,20 @@ a.plain:hover { text-decoration: underline; }
 @media (max-width: 420px) {
   .companion-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------------- reply states, stop/regenerate (engineering hardening) ---------------- */
+[hidden] { display: none !important; }
+.bubble-text { white-space: pre-wrap; }
+.bubble.failed { border-color: var(--danger); }
+.bubble-note { margin-top: 0.4rem; font-size: 0.72rem; color: var(--text-faint); font-style: italic; }
+.bubble.failed .bubble-note { color: var(--danger); font-style: normal; }
+.reply-actions { display: flex; justify-content: center; padding: 0.25rem 0 0.5rem; }
+.chat-input-row #stop-btn { border-radius: 999px; padding: 0.55rem 1.1rem; }
+.mic-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.danger-zone { border-color: var(--danger); }
+.memory-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0.55rem 0; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+.memory-row:last-child { border-bottom: none; }
+.audit-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.audit-table code { font-size: 0.75rem; word-break: break-all; }
+.clone-form { display: grid; gap: 0.75rem; }

@@ -1,31 +1,50 @@
-import tempfile
-import os
-import subprocess
-import sys
-from pathlib import Path
+"""
+Chat pages and the streaming chat API.
 
-from fastapi import APIRouter, Depends, Request, UploadFile, File
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, RedirectResponse
+Reply stream protocol (application/x-ndjson, one JSON object per line):
+    {"type": "start", "message_id": "...", "model": "..."}
+    {"type": "delta", "text": "..."}                         (repeated)
+    {"type": "done", "status": "completed" | "cancelled", "message_id": "..."}
+    {"type": "error", "code": "...", "message": "...", "message_id": "..."}   (mid-stream failure)
+Failures before the first token are returned as a normal JSON error response instead.
+"""
+
+import json
+import logging
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Companion, Conversation, Message, User, Voice, VoiceMessage, now as utcnow
 from auth import require_user, require_user_api
-from llm.openrouter import stream_reply
-from emotion.classifier import classify_emotion
-from emotion.guidance import build_empathy_system_prompt, get_recent_emotions, record_emotion
-from voice.effects import EMOTION_EFFECTS, VOICE_CHANGER_STYLES, apply_chain
-from voice.adaptive import resolve_adaptive_effect, resolve_scaled_chain
-from voice.engine import get_engine
-from voice.audio_utils import audio_duration_seconds
-from voice.language import detect_language, display_name_for, code_for_name, LANGUAGES
-from schemas import ChatRequest, SpeakRequest
+from conversation import streams
+from conversation.context import build_context
+from conversation.summary import maybe_enqueue_summary
+from core import storage
+from core.access import (
+    get_companion_for_user,
+    get_conversation_for_user,
+    get_message_for_user,
+    list_voices_for_user,
+)
+from core.errors import AppError, Conflict
+from core.rate_limit import rate_limit
+from database import get_db, session_scope
+from emotion.classifier import EmotionResult, detect_emotion
+from emotion.guidance import build_emotion_context, get_recent_emotions, record_emotion
+from emotion.strategy import strategy_for
+from jobs.queue import enqueue
+from llm.openrouter import LLMError, StreamResult, stream_reply
+from memory.extraction import worth_extracting
+from models import Companion, Conversation, Message, User, now
+from schemas import ChatRequest, RegenerateRequest
 from templating import templates
+from voice.effects import EMOTION_EFFECTS, VOICE_CHANGER_STYLES
+from voice.language import LANGUAGES, code_for_name, detect_language, display_name_for
+
+log = logging.getLogger("app.chat")
 
 router = APIRouter()
-
-VOICE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "data" / "voice_audio"
-VOICE_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _get_or_create_conversation(db: Session, user_id: str, companion_id: str) -> Conversation:
@@ -39,7 +58,6 @@ def _get_or_create_conversation(db: Session, user_id: str, companion_id: str) ->
         conversation = Conversation(user_id=user_id, companion_id=companion_id)
         db.add(conversation)
         db.commit()
-        db.refresh(conversation)
     return conversation
 
 
@@ -50,8 +68,6 @@ def _render_chat(request: Request, user: User, companion: Companion, conversatio
         .order_by(Message.created_at.asc())
         .all()
     )
-    voices = db.query(Voice).order_by(Voice.kind.desc(), Voice.category, Voice.name).all()
-
     return templates.TemplateResponse(
         request,
         "chat.html",
@@ -60,7 +76,7 @@ def _render_chat(request: Request, user: User, companion: Companion, conversatio
             "companion": companion,
             "conversation": conversation,
             "messages": messages,
-            "voices": voices,
+            "voices": list_voices_for_user(db, user),
             "emotions": list(EMOTION_EFFECTS.keys()),
             "styles": list(VOICE_CHANGER_STYLES.keys()),
             "languages": list(LANGUAGES.keys()),
@@ -69,23 +85,18 @@ def _render_chat(request: Request, user: User, companion: Companion, conversatio
 
 
 @router.get("/chat/{companion_id}")
-def chat_page(
-    request: Request, companion_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)
-):
-    companion = db.query(Companion).filter(Companion.id == companion_id).first()
-    if not companion:
-        return HTMLResponse("Companion not found", status_code=404)
-
-    conversation = _get_or_create_conversation(db, user.id, companion_id)
+def chat_page(request: Request, companion_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    companion = get_companion_for_user(db, user, companion_id)
+    conversation = _get_or_create_conversation(db, user.id, companion.id)
     return _render_chat(request, user, companion, conversation, db)
 
 
 @router.post("/chat/{companion_id}/new")
 def new_chat_thread(companion_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    conversation = Conversation(user_id=user.id, companion_id=companion_id)
+    companion = get_companion_for_user(db, user, companion_id)
+    conversation = Conversation(user_id=user.id, companion_id=companion.id)
     db.add(conversation)
     db.commit()
-    db.refresh(conversation)
     return RedirectResponse(f"/chat/conversation/{conversation.id}", status_code=303)
 
 
@@ -93,240 +104,236 @@ def new_chat_thread(companion_id: str, user: User = Depends(require_user), db: S
 def open_conversation(
     request: Request, conversation_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)
 ):
-    conversation = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+    conversation = get_conversation_for_user(db, user, conversation_id)
+    return _render_chat(request, user, conversation.companion, conversation, db)
+
+
+# ---------------------------------------------------------------- streaming
+
+
+def _language_for(db: Session, conversation: Conversation, text: str, preferred: str | None) -> tuple[str, bool]:
+    """Returns (language code, forced). detect_language returns None for short/ambiguous
+    text (e.g. "Hello" alone can misdetect as almost anything) — fall back to this
+    conversation's last known language rather than guessing, else English."""
+    forced = code_for_name(preferred) if preferred else None
+    if forced:
+        return forced, True
+    last = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation.id, Message.language.isnot(None), Message.role == "user")
+        .order_by(Message.created_at.desc())
         .first()
     )
-    if not conversation:
-        return HTMLResponse("Conversation not found", status_code=404)
+    return detect_language(text) or (last.language if last else "en"), False
 
-    return _render_chat(request, user, conversation.companion, conversation, db)
+
+def _language_instruction(lang_code: str, forced: bool) -> str:
+    lang_name = display_name_for(lang_code)
+    if forced:
+        return (
+            f"IMPORTANT: regardless of what language this message is written in, "
+            f"you must reply entirely in {lang_name}. Do not use English or any other language."
+        )
+    return f"The user is writing in {lang_name}. Reply fluently in {lang_name}, matching their language."
+
+
+def _line(event: dict) -> bytes:
+    return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _finalise(message_id: str, conversation_id: str, content: str, status: str, error_code: str | None, model: str | None):
+    """Runs after the request's DB session is gone, so it opens its own."""
+    with session_scope() as db:
+        message = db.get(Message, message_id)
+        if message is None:  # conversation deleted mid-stream
+            return
+        message.content = content
+        message.status = status
+        message.error_code = error_code
+        message.model = model
+        conversation = db.get(Conversation, conversation_id)
+        if conversation is not None:
+            conversation.updated_at = now()
+
+
+def _stream_assistant_reply(db: Session, conversation: Conversation, assistant: Message, llm_messages: list[dict]):
+    stop_event = streams.register(assistant.id)
+    result = StreamResult()
+    replies = stream_reply(llm_messages, result, should_stop=stop_event.is_set)
+
+    # Pull the first token before committing to a 200 streaming response, so provider
+    # failures (timeouts, bad key, all fallbacks down) become a proper error response.
+    try:
+        first = next(replies)
+    except StopIteration:
+        first = None
+    except LLMError as exc:
+        streams.unregister(assistant.id)
+        assistant.status, assistant.error_code = "failed", exc.code
+        db.commit()
+        log.warning("llm request failed before streaming", extra={"error_code": exc.code})
+        return JSONResponse(
+            {"error": {"code": exc.code, "message": exc.message, "message_id": assistant.id}}, status_code=502
+        )
+    if first is None:
+        streams.unregister(assistant.id)
+        assistant.status, assistant.error_code = "failed", "EMPTY_REPLY"
+        db.commit()
+        return JSONResponse(
+            {"error": {"code": "EMPTY_REPLY", "message": "The model returned an empty reply.", "message_id": assistant.id}},
+            status_code=502,
+        )
+
+    assistant.status, assistant.model = "streaming", result.model
+    db.commit()
+    message_id, conversation_id = assistant.id, conversation.id
+
+    def body():
+        parts = [first]
+        status, error_code = "completed", None
+        try:
+            yield _line({"type": "start", "message_id": message_id, "model": result.model})
+            yield _line({"type": "delta", "text": first})
+            for chunk in replies:
+                parts.append(chunk)
+                yield _line({"type": "delta", "text": chunk})
+            if stop_event.is_set():
+                status = "cancelled"
+            yield _line({"type": "done", "status": status, "message_id": message_id})
+        except LLMError as exc:
+            status, error_code = "failed", exc.code
+            yield _line({"type": "error", "code": exc.code, "message": exc.message, "message_id": message_id})
+        except GeneratorExit:  # client disconnected / aborted the fetch
+            status = "cancelled"
+            raise
+        finally:
+            replies.close()
+            streams.unregister(message_id)
+            text = "".join(parts).strip()
+            _finalise(message_id, conversation_id, text, status, error_code, result.model)
+            log.info("reply %s", status, extra={"model": result.model, "error_code": error_code})
+
+    return StreamingResponse(
+        body(),
+        media_type="application/x-ndjson",
+        headers={"X-Assistant-Message-Id": message_id, "Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+def _prepare_turn(
+    db: Session,
+    user: User,
+    conversation: Conversation,
+    companion: Companion,
+    user_message: Message,
+    emotion: EmotionResult | None,
+    lang_code: str,
+    forced: bool,
+):
+    emotion_context = None
+    if emotion is not None:
+        strategy = strategy_for(emotion)
+        user_message.response_strategy = strategy.name
+        emotion_context = build_emotion_context(emotion, strategy, get_recent_emotions(db, user.id))
+
+    assistant = Message(conversation_id=conversation.id, role="assistant", content="", status="pending", language=lang_code)
+    db.add(assistant)
+    db.flush()
+
+    built = build_context(
+        db,
+        conversation,
+        persona_prompt=companion.persona_prompt,
+        emotion_context=emotion_context,
+        language_instruction=_language_instruction(lang_code, forced),
+        memory_enabled=user.memory_enabled,
+        query_text=user_message.content,
+    )
+    maybe_enqueue_summary(db, conversation, built.unsummarized_count)
+    db.commit()
+    return _stream_assistant_reply(db, conversation, assistant, built.messages)
 
 
 @router.post("/api/chat")
 def api_chat(
-    request: Request,
     payload: ChatRequest,
     user: User = Depends(require_user_api),
+    _limit: None = Depends(rate_limit("chat")),
     db: Session = Depends(get_db),
 ):
-    conversation_id = payload.conversation_id
-    message = payload.message.strip()
-    if not conversation_id or not message:
-        return JSONResponse({"error": "conversation_id and message are required"}, status_code=400)
+    conversation = get_conversation_for_user(db, user, payload.conversation_id)
+    companion = get_companion_for_user(db, user, conversation.companion_id)
+    message = payload.message
+    lang_code, forced = _language_for(db, conversation, message, payload.preferred_language)
 
-    conversation = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
-        .first()
-    )
-    if not conversation:
-        return JSONResponse({"error": "Conversation not found"}, status_code=404)
-
-    persona_prompt = conversation.companion.persona_prompt
-
-    forced_lang = code_for_name(payload.preferred_language) if payload.preferred_language else None
-
-    # detect_language returns None for short/ambiguous text (e.g. "Hello" alone can
-    # misdetect as almost anything) — fall back to this conversation's last known
-    # language rather than guessing, and only default to English if there's no history.
-    last_message = (
-        db.query(Message)
-        .filter(Message.conversation_id == conversation_id, Message.language.isnot(None))
-        .order_by(Message.created_at.desc())
-        .first()
-    )
-    fallback_lang = last_message.language if last_message else "en"
-
-    detected_lang = forced_lang or detect_language(message) or fallback_lang
-    lang_name = display_name_for(detected_lang)
-
-    user_message = Message(conversation_id=conversation_id, role="user", content=message, language=detected_lang)
+    user_message = Message(conversation_id=conversation.id, role="user", content=message, language=lang_code)
     db.add(user_message)
-    db.commit()
-
-    # auto-title new conversations from the first message
-    if not conversation.title:
+    if not conversation.title:  # auto-title new conversations from the first message
         conversation.title = message[:60] + ("..." if len(message) > 60 else "")
-        db.commit()
 
-    system_prompt = persona_prompt
+    emotion = None
     if user.emotion_tracking_enabled:
-        emotion = classify_emotion(message)
-        recent = get_recent_emotions(db, user.id)
-        system_prompt = build_empathy_system_prompt(persona_prompt, emotion, recent)
-        user_message.emotion = emotion
-        db.commit()
+        emotion = detect_emotion(message)
+        user_message.emotion, user_message.emotion_confidence = emotion.emotion, emotion.confidence
         record_emotion(db, user.id, emotion)
+    db.flush()
 
-    if forced_lang:
-        system_prompt += (
-            f"\n\nIMPORTANT: regardless of what language this message is written in, "
-            f"you must reply entirely in {lang_name}. Do not use English or any other language."
+    if user.memory_enabled and worth_extracting(message):
+        enqueue(
+            db,
+            "extract_memories",
+            {"message_id": user_message.id},
+            user_id=user.id,
+            dedupe_key=f"memory:{user_message.id}",
+            max_attempts=2,
         )
-    else:
-        system_prompt += f"\n\nThe user is writing in {lang_name}. Reply fluently in {lang_name}, matching their language."
-
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in db.query(Message)
-        .filter(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.asc())
-        .all()
-    ]
-
-    assistant_message = Message(conversation_id=conversation_id, role="assistant", content="", language=detected_lang)
-    db.add(assistant_message)
-    db.commit()
-    db.refresh(assistant_message)
-
-    def generate():
-        full_reply = []
-        try:
-            for chunk in stream_reply(system_prompt, history):
-                full_reply.append(chunk)
-                yield chunk
-        finally:
-            text = "".join(full_reply).strip()
-            assistant_message.content = text or "[no reply generated]"
-            conversation.updated_at = utcnow()
-            db.commit()
-
-    return StreamingResponse(
-        generate(), media_type="text/plain", headers={"X-Assistant-Message-Id": assistant_message.id}
-    )
+    return _prepare_turn(db, user, conversation, companion, user_message, emotion, lang_code, forced)
 
 
-@router.post("/api/messages/{message_id}/speak")
-def speak_message(
-    message_id: str,
-    payload: SpeakRequest,
+@router.post("/api/chat/regenerate")
+def api_regenerate(
+    payload: RegenerateRequest,
     user: User = Depends(require_user_api),
+    _limit: None = Depends(rate_limit("chat")),
     db: Session = Depends(get_db),
 ):
-    message = (
-        db.query(Message)
-        .join(Conversation, Message.conversation_id == Conversation.id)
-        .filter(Message.id == message_id, Conversation.user_id == user.id)
-        .first()
+    """Retry a failed reply or regenerate the latest one: drops the conversation's last
+    assistant message (if it is the last message) and answers the last user message again."""
+    conversation = get_conversation_for_user(db, user, payload.conversation_id)
+    companion = get_companion_for_user(db, user, conversation.companion_id)
+
+    last = (
+        db.query(Message).filter(Message.conversation_id == conversation.id).order_by(Message.created_at.desc()).first()
     )
-    if not message:
-        return JSONResponse({"error": "Message not found"}, status_code=404)
-
-    existing = db.query(VoiceMessage).filter(VoiceMessage.message_id == message_id).first()
-    if (
-        existing
-        and payload.tts_effect != "auto"
-        and existing.tts_style == payload.tts_effect
-        and existing.voice_id == payload.voice_id
-    ):
-        return JSONResponse(
-            {"audio_url": f"/media/voice/{existing.id}", "duration": existing.duration_seconds, "skipped": False}
-        )
-
-    voice = db.query(Voice).filter(Voice.id == payload.voice_id).first()
-    if not voice:
-        return JSONResponse({"error": "Voice not found"}, status_code=404)
-
-    engine = get_engine()
-    lang_code = message.language or "en"
-    if not engine.supports_language(lang_code):
-        return JSONResponse(
-            {
-                "skipped": True,
-                "reason": f"No {engine.name} voice for {display_name_for(message.language)} — text reply only.",
-            }
-        )
-
-    raw_path = VOICE_AUDIO_DIR / f"{message_id}_raw.wav"
-    final_path = VOICE_AUDIO_DIR / f"{message_id}.wav"
-
-    kwargs = {"language": lang_code}
-    if voice.kind == "cloned" and engine.clone_needs_raw_file:
-        kwargs["speaker_wav"] = voice.speaker_ref
-    else:
-        kwargs["speaker_name"] = voice.speaker_ref
-
-    engine.synthesize(message.content, str(raw_path), **kwargs)
-
-    if payload.tts_effect == "auto" and user.voice_auto_adaptive:
-        prior_user_msg = (
+    if last is not None and last.role == "assistant":
+        if last.status in ("pending", "streaming"):
+            raise Conflict("A reply is still being generated.", code="REPLY_IN_PROGRESS")
+        audio_key = last.voice_message.audio_path if last.voice_message else None
+        db.delete(last)
+        db.flush()
+        storage.delete(audio_key)
+        last = (
             db.query(Message)
-            .filter(
-                Message.conversation_id == message.conversation_id,
-                Message.role == "user",
-                Message.created_at < message.created_at,
-            )
+            .filter(Message.conversation_id == conversation.id)
             .order_by(Message.created_at.desc())
             .first()
         )
-        effect_key = resolve_adaptive_effect(
-            assistant_reply_text=message.content,
-            user_message_text=prior_user_msg.content if prior_user_msg else None,
-            persona_prompt=message.conversation.companion.persona_prompt,
-            formal_casual=user.voice_style,
-        )
-    else:
-        effect_key = None if payload.tts_effect == "auto" else payload.tts_effect
+    if last is None or last.role != "user":
+        raise AppError("There is no message to reply to.", code="NOTHING_TO_REGENERATE", status_code=409)
 
-    chain = resolve_scaled_chain(
-        effect_key,
-        intensity=user.voice_emotional_intensity,
-        speed_bias=user.voice_speed,
-        volume_bias_db=user.voice_volume_db,
-    )
-    if chain:
-        apply_chain(str(raw_path), str(final_path), chain)
-        os.unlink(raw_path)
-    else:
-        os.replace(raw_path, final_path)
+    lang_code, forced = _language_for(db, conversation, last.content, payload.preferred_language)
+    emotion = None
+    if user.emotion_tracking_enabled and last.emotion:
+        emotion = EmotionResult(last.emotion, last.emotion_confidence or 0.5, "stored")
+    return _prepare_turn(db, user, conversation, companion, last, emotion, lang_code, forced)
 
-    duration = audio_duration_seconds(str(final_path))
 
-    if existing:
-        existing.audio_path = str(final_path)
-        existing.voice_id = voice.id
-        existing.tts_style = effect_key
-        existing.duration_seconds = duration
+@router.post("/api/messages/{message_id}/cancel")
+def cancel_reply(message_id: str, user: User = Depends(require_user_api), db: Session = Depends(get_db)):
+    message = get_message_for_user(db, user, message_id)
+    stopped = streams.request_stop(message.id)
+    if not stopped and message.status in ("pending", "streaming"):
+        # not streaming in this process (restart or another worker): don't leave it stuck
+        message.status = "cancelled"
         db.commit()
-        voice_message_id = existing.id
-    else:
-        vm = VoiceMessage(
-            message_id=message_id,
-            audio_path=str(final_path),
-            voice_id=voice.id,
-            tts_style=effect_key,
-            duration_seconds=duration,
-        )
-        db.add(vm)
-        db.commit()
-        db.refresh(vm)
-        voice_message_id = vm.id
-
-    return JSONResponse({"audio_url": f"/media/voice/{voice_message_id}", "duration": duration, "skipped": False})
-
-
-TRANSCRIBE_CLI = Path(__file__).resolve().parent.parent / "scripts" / "transcribe_cli.py"
-
-
-@router.post("/api/stt")
-async def api_stt(audio: UploadFile = File(...), user: User = Depends(require_user_api)):
-    suffix = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await audio.read())
-        tmp_path = tmp.name
-
-    try:
-        # subprocess isolation: ctranslate2 (faster-whisper) and torch (XTTS) crash
-        # if loaded in the same process — see transcribe_cli.py for the full reason.
-        result = subprocess.run(
-            [sys.executable, str(TRANSCRIBE_CLI), tmp_path],
-            capture_output=True,
-            timeout=120,
-        )
-        text = result.stdout.decode("utf-8", errors="replace").strip()
-    finally:
-        os.unlink(tmp_path)
-
-    return JSONResponse({"text": text})
+    return {"ok": True, "status": "cancelling" if stopped else message.status}

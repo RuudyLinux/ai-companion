@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+data/
+static/previews/
+.pytest_cache/
+.ruff_cache/
+server*.log
+.server.pid
+tests/

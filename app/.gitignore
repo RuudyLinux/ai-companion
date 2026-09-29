@@ -2,10 +2,12 @@ venv/
 __pycache__/
 *.pyc
 .env
-data/*.db
-data/inworld_voice_cache.json
+# runtime data: database, generated audio, voice reference recordings (private!)
+data/
+static/previews/
 models_store/*.joblib
 .pytest_cache/
+.ruff_cache/
 server.log
 server.err.log
 .server.pid

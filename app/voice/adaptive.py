@@ -5,10 +5,11 @@ one manually every message, then scales it by that user's own speed/volume/inten
 preferences. Voice identity itself is never touched — this only reshapes the delivery of
 whatever voice already spoke, same as the existing manual effect-preset feature.
 
-Primary signal is the assistant's OWN finished reply text (classified with the existing
-emotion/classifier.py), not the user's message — a caring reply to an angry user should
-sound calm, not angry, so the reply's own tone is a stronger signal than mirroring the
-user. The user's emotion is only consulted as a fallback when the reply reads neutral.
+Primary signal is the response strategy chosen for the user's emotion
+(emotion/strategy.py): user emotion -> strategy -> assistant tone -> voice delivery, so
+an angry user gets a calm, controlled voice rather than a mirrored angry one. When the
+user's emotion is unknown or neutral, the assistant's own reply text is classified
+instead (never mapped to an aggressive preset).
 
 Deliberately out of scope, not silently faked:
   - Pause duration / pronunciation emphasis: no TTS backend in use (XTTS, F5-TTS, Inworld)
@@ -23,12 +24,13 @@ Deliberately out of scope, not silently faked:
 from datetime import datetime
 
 from emotion.classifier import classify_emotion
+from emotion.strategy import strategy_for
 from voice.effects import EMOTION_EFFECTS, VOICE_CHANGER_STYLES
 
 NEUTRAL_PRESET = "friendly"
 
 EMOTION_TO_PRESET = {
-    "happy": "happy", "sad": "sad", "angry": "angry",
+    "happy": "happy", "sad": "sad", "angry": "serious",  # the companion never sounds angry
     "frustrated": "serious", "stressed": "calm", "anxious": "calm",
     "excited": "excited", "nervous": "calm", "lonely": "emotional",
     "confused": "serious", "fearful": "fear", "calm": "calm",
@@ -74,19 +76,22 @@ def _time_of_day_bucket(now: datetime | None = None) -> str:
 
 def resolve_adaptive_effect(
     assistant_reply_text: str,
-    user_message_text: str | None,
+    user_emotion: str | None,
     persona_prompt: str,
     formal_casual: str,
     now: datetime | None = None,
 ) -> str:
     """Picks an EMOTION_EFFECTS/VOICE_CHANGER_STYLES preset key for this reply. Always
-    returns a valid preset key (falls all the way back to NEUTRAL_PRESET)."""
-    preset = EMOTION_TO_PRESET.get(classify_emotion(assistant_reply_text), NEUTRAL_PRESET)
+    returns a valid preset key (falls all the way back to NEUTRAL_PRESET).
 
-    if preset == NEUTRAL_PRESET and user_message_text:
-        user_preset = EMOTION_TO_PRESET.get(classify_emotion(user_message_text), NEUTRAL_PRESET)
-        if user_preset != NEUTRAL_PRESET:
-            preset = user_preset
+    `user_emotion` is the label already detected for the user's message (None when
+    emotion tracking is off)."""
+    preset = NEUTRAL_PRESET
+    if user_emotion and user_emotion != "neutral":
+        preset = strategy_for(user_emotion).voice_preset
+
+    if preset == NEUTRAL_PRESET:
+        preset = EMOTION_TO_PRESET.get(classify_emotion(assistant_reply_text), NEUTRAL_PRESET)
 
     if preset == NEUTRAL_PRESET:
         conversation_type = _infer_conversation_type(persona_prompt)

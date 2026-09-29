@@ -10,3 +10,6 @@ Dataset/
 venv/
 __pycache__/
 .claude/settings.local.json
+
+# local tool output
+.playwright-mcp/

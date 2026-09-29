@@ -7,9 +7,11 @@ Both are mapped onto the 15-label taxonomy from the Emotional Conversation Modul
 spec (see label_mapping.py), combined, and used to train a TF-IDF + Logistic
 Regression classifier. Runs on CPU in well under a minute.
 
-Usage: venv\\Scripts\\python.exe emotion\\train_classifier.py
+Usage: python emotion/train_classifier.py [DATASET_DIR]
+  DATASET_DIR defaults to $EMOTION_DATASET_DIR, then ../Dataset next to app/.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -23,7 +25,9 @@ from sklearn.metrics import classification_report, accuracy_score
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from emotion.label_mapping import GOEMOTIONS_TO_OURS, EMPATHETIC_TO_OURS, GOEMOTIONS_LABEL_ORDER
 
-DATASET_ROOT = Path(r"D:/#practicals/AI companion/Dataset")
+DATASET_ROOT = Path(
+    sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EMOTION_DATASET_DIR", Path(__file__).resolve().parents[2] / "Dataset")
+)
 GOEMOTIONS_TRAIN_TSV = DATASET_ROOT / "GoEmotions" / "data" / "train.tsv"
 EMPATHETIC_CSV = DATASET_ROOT / "emotion-emotion_69k.csv"
 MODEL_OUT = Path(__file__).resolve().parent.parent / "models_store" / "emotion_classifier.joblib"

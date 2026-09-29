@@ -5,19 +5,46 @@
 <div class="page page-xwide">
   <h1>Voice Library</h1>
   <p class="subtitle">
-    Your cloned voice plus {{ voices|length - 1 }} Inworld studio voices. Previews generate on first click and are
-    cached after (Inworld is a paid API, so nothing is pre-generated in bulk). Combine any voice with an emotion or
-    voice-changer style in chat for more variety.
+    Your private cloned voices plus the built-in voices of the active engine. Previews generate on first click and are
+    cached after. Combine any voice with an emotion or voice-changer style in chat for more variety.
   </p>
 
-  <input type="text" id="voice-search" class="mb-lg voice-search-input" placeholder="Search by name, gender, or language...">
+  <details class="glass card mb-lg">
+    <summary><strong>Clone a voice</strong> — only you can see and use voices you clone</summary>
+    <form id="clone-form" class="clone-form mt-lg">
+      <div class="field">
+        <label for="clone-name">Name</label>
+        <input type="text" id="clone-name" name="name" required maxlength="60" placeholder="e.g. My voice">
+      </div>
+      <div class="field">
+        <label for="clone-language">Language of the recording</label>
+        <select id="clone-language" name="language">
+          {% for lang in languages %}<option value="{{ lang }}">{{ lang }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="clone-audio">Recording ({{ min_clone_seconds }}–{{ max_clone_seconds }} seconds of clear speech; WAV, MP3, M4A, OGG, WebM or FLAC)</label>
+        <input type="file" id="clone-audio" name="audio" accept="audio/*" required>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="clone-consent" name="consent" value="true" required>
+        <label for="clone-consent">This is my own voice, or I have the speaker's explicit permission to clone it.</label>
+      </div>
+      <button type="submit" class="btn btn-primary" id="clone-submit">Create cloned voice</button>
+    </form>
+  </details>
+
+  <input type="text" id="voice-search" class="mb-lg voice-search-input" placeholder="Search by name, gender, or language..." aria-label="Search voices">
 
   <div class="voice-grid" id="voice-grid">
     {% for v in voices %}
-    <div class="glass voice-card" data-search="{{ v.name|lower }} {{ v.category|lower }}" style="animation-delay: {{ loop.index0 * 0.03 }}s;">
+    <div class="glass voice-card" data-search="{{ v.name|lower }} {{ v.category|lower }}" style="animation-delay: {{ [loop.index0, 30]|min * 0.03 }}s;">
       <div class="voice-name">{{ "⭐ " if v.kind == "cloned" else "" }}{{ v.name }}</div>
       <div class="voice-cat">{{ v.category }}</div>
       <button type="button" class="btn btn-ghost btn-sm play-preview" data-voice-id="{{ v.id }}">▶ Preview</button>
+      {% if v.owner_id == user.id %}
+      <button type="button" class="btn btn-danger btn-sm delete-voice" data-voice-id="{{ v.id }}" data-voice-name="{{ v.name }}">Delete</button>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
@@ -25,25 +52,40 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script type="module">
+  import { playVoicePreview } from "/static/js/chat/voice.js?v={{ asset_version('static/js/chat/voice.js') }}";
+
   document.querySelectorAll(".play-preview").forEach((btn) => {
+    btn.addEventListener("click", () => playVoicePreview(btn.dataset.voiceId, btn));
+  });
+
+  document.querySelectorAll(".delete-voice").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const original = btn.textContent;
-      btn.innerHTML = '<span class="spinner"></span> Loading...';
-      btn.disabled = true;
-      try {
-        const res = await fetch(`/api/voices/${btn.dataset.voiceId}/preview`, { method: "POST" });
-        if (!res.ok) throw new Error("preview failed");
-        const blob = await res.blob();
-        new Audio(URL.createObjectURL(blob)).play();
-      } catch (err) {
-        console.error(err);
-        if (window.showToast) window.showToast("Couldn't load that preview.", "error");
-      } finally {
-        btn.textContent = original;
-        btn.disabled = false;
-      }
+      if (!confirm(`Delete "${btn.dataset.voiceName}"? Its recording and every voice message made with it are deleted too.`)) return;
+      const res = await fetch(`/api/voices/${btn.dataset.voiceId}`, { method: "DELETE" });
+      if (!res.ok) return window.showToast(await window.apiErrorMessage(res, "Couldn't delete that voice."), "error");
+      btn.closest(".voice-card").remove();
+      window.showToast("Voice deleted.", "success");
     });
+  });
+
+  const cloneForm = document.getElementById("clone-form");
+  cloneForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submit = document.getElementById("clone-submit");
+    submit.disabled = true;
+    submit.innerHTML = '<span class="spinner"></span> Uploading...';
+    try {
+      const res = await fetch("/api/voices/clone", { method: "POST", body: new FormData(cloneForm) });
+      if (!res.ok) throw new Error(await window.apiErrorMessage(res, "Couldn't clone that voice."));
+      window.showToast("Voice created.", "success");
+      window.location.reload();
+    } catch (err) {
+      window.showToast(err.message, "error", 6000);
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Create cloned voice";
+    }
   });
 
   const searchInput = document.getElementById("voice-search");

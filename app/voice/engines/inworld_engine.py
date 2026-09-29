@@ -1,7 +1,7 @@
 """
-Inworld AI cloud TTS engine (cloud_production mode). Like ElevenLabs, cloning needs a
-one-time registration call (POST /voices/v1/voices:clone -> voiceId) that's cached to
-disk so we don't re-register the same reference file on every synthesis call.
+Inworld AI cloud TTS engine. Like ElevenLabs, cloning needs a one-time registration call
+(POST /voices/v1/voices:clone -> voiceId); the returned id is stored on the Voice row
+(voices.provider_voice_id) by voice/service.py, so nothing is keyed by file path.
 
 Auth quirk: INWORLD_API_KEY is *already* a base64-encoded "key:secret" pair (Inworld
 issues it that way) — the Authorization header is literally "Basic {the raw key
@@ -9,19 +9,15 @@ string}", not a re-encoded value.
 """
 
 import base64
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import requests
 
+from core.config import settings
 from voice.engine_base import VoiceEngine
+from voice.stt_runner import run_transcription
 
 API_BASE = "https://api.inworld.ai"
-VOICE_CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "inworld_voice_cache.json"
-TRANSCRIBE_CLI = Path(__file__).resolve().parent.parent.parent / "scripts" / "transcribe_cli.py"
 MODEL_ID = "inworld-tts-2"
 SAMPLE_RATE = 24000
 
@@ -44,12 +40,9 @@ _LANG_TO_BCP47 = {
 
 def _transcribe_for_clone(speaker_wav: str) -> str:
     """Optional but improves clone fidelity per Inworld's docs. Best-effort — cloning
-    still works without it, so any failure here is swallowed rather than raised."""
+    still works without it, so a failure here only skips the transcript."""
     try:
-        result = subprocess.run(
-            [sys.executable, str(TRANSCRIBE_CLI), speaker_wav], capture_output=True, timeout=120
-        )
-        return result.stdout.decode("utf-8", errors="replace").strip()
+        return run_transcription(speaker_wav)["text"]
     except Exception:
         return ""
 
@@ -59,11 +52,11 @@ class InworldMisconfigured(RuntimeError):
 
 
 class InworldEngine(VoiceEngine):
-    name = "cloud_production"
+    name = "inworld"
     clone_needs_raw_file = False
 
     def __init__(self):
-        self.api_key = os.environ.get("INWORLD_API_KEY", "").strip()
+        self.api_key = settings.inworld_api_key or ""
 
     def _require_key(self):
         if not self.api_key:
@@ -75,26 +68,13 @@ class InworldEngine(VoiceEngine):
             headers["Content-Type"] = "application/json"
         return headers
 
-    def _load_cache(self) -> dict:
-        if VOICE_CACHE_PATH.exists():
-            return json.loads(VOICE_CACHE_PATH.read_text())
-        return {}
-
-    def _save_cache(self, cache: dict):
-        VOICE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        VOICE_CACHE_PATH.write_text(json.dumps(cache, indent=2))
-
-    def _get_or_create_cloned_voice_id(self, speaker_wav: str, lang_code: str) -> str:
+    def register_clone(self, reference_wav: str, language: str, display_name: str) -> str:
         self._require_key()
-        cache = self._load_cache()
-        if speaker_wav in cache:
-            return cache[speaker_wav]
-
-        with open(speaker_wav, "rb") as f:
+        with open(reference_wav, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
 
         sample = {"audioData": audio_b64}
-        transcription = _transcribe_for_clone(speaker_wav)
+        transcription = _transcribe_for_clone(reference_wav)
         if transcription:
             sample["transcription"] = transcription
 
@@ -102,27 +82,22 @@ class InworldEngine(VoiceEngine):
             f"{API_BASE}/voices/v1/voices:clone",
             headers=self._headers(),
             json={
-                "displayName": "AI Companion Cloned Voice",
-                "langCode": _LANG_TO_CLONE_CODE.get(lang_code, "EN_US"),
+                "displayName": display_name[:100],
+                "langCode": _LANG_TO_CLONE_CODE.get(language, "EN_US"),
                 "voiceSamples": [sample],
             },
             timeout=60,
         )
         resp.raise_for_status()
-        voice_id = resp.json()["voice"]["voiceId"]
-        cache[speaker_wav] = voice_id
-        self._save_cache(cache)
-        return voice_id
+        return resp.json()["voice"]["voiceId"]
 
     def synthesize(self, text, out_path, language="en", speaker_wav=None, speaker_name=None):
         self._require_key()
 
-        if speaker_wav:
-            voice_id = self._get_or_create_cloned_voice_id(speaker_wav, language)
-        elif speaker_name:
-            voice_id = speaker_name
-        else:
-            raise ValueError("synthesize() requires speaker_wav or speaker_name")
+        if not speaker_name:
+            # cloned voices must be registered first (register_clone) and then used by id
+            raise ValueError("Inworld synthesize() requires speaker_name (a provider voice id)")
+        voice_id = speaker_name
 
         resp = requests.post(
             f"{API_BASE}/tts/v1/voice",

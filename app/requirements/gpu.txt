@@ -1,0 +1,7 @@
+# Local GPU voice engines: VOICE_ENGINE=xtts (Coqui XTTS-v2) or f5tts (F5-TTS).
+# Install torch/torchaudio first from the index matching your CUDA version, e.g.
+#   pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+-r base.txt
+-r stt.txt
+coqui-tts==0.27.5
+f5-tts==1.1.22

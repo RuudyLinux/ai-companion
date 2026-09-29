@@ -15,14 +15,17 @@
 
 {% block scripts %}
 <script>
+  const esc = window.escapeHtml;
+
   async function load() {
     const list = document.getElementById("vm-list");
     let items;
     try {
       const res = await fetch("/api/voice-messages");
+      if (!res.ok) throw new Error(await window.apiErrorMessage(res, "Could not load voice messages."));
       items = await res.json();
     } catch (err) {
-      list.innerHTML = '<p class="empty-hint">Could not load voice messages.</p>';
+      list.innerHTML = `<p class="empty-hint">${window.escapeHtml(err.message)}</p>`;
       return;
     }
     list.innerHTML = "";
@@ -34,10 +37,10 @@
       const row = document.createElement("div");
       row.className = "vm-row";
       row.innerHTML = `
-        <button type="button" class="audio-btn" data-play>▶</button>
+        <button type="button" class="audio-btn" data-play aria-label="Play">▶</button>
         <div class="vm-info">
-          <div class="vm-text">${vm.text_preview.replace(/</g, "&lt;")}</div>
-          <div class="vm-meta">${vm.companion_name} · ${vm.duration_seconds ? vm.duration_seconds.toFixed(1) + "s" : ""} · ${new Date(vm.created_at).toLocaleString()}${vm.tts_style ? " · " + vm.tts_style : ""}</div>
+          <div class="vm-text">${esc(vm.text_preview)}</div>
+          <div class="vm-meta">${esc(vm.companion_name)} · ${vm.duration_seconds ? vm.duration_seconds.toFixed(1) + "s" : ""} · ${esc(new Date(vm.created_at).toLocaleString())}${vm.tts_style ? " · " + esc(vm.tts_style) : ""}</div>
         </div>
         <div class="vm-actions">
           <button type="button" class="btn btn-ghost btn-sm" data-download>Download</button>
@@ -56,15 +59,21 @@
         window.location.href = `/api/voice-messages/${vm.id}/download`;
       });
       row.querySelector("[data-share]").addEventListener("click", async () => {
-        const res = await fetch(`/api/voice-messages/${vm.id}/share`);
-        const data = await res.json();
-        await navigator.clipboard.writeText(window.location.origin + data.url);
-        if (window.showToast) window.showToast("Link copied to clipboard.", "success");
+        try {
+          const res = await fetch(`/api/voice-messages/${vm.id}/share`);
+          if (!res.ok) throw new Error(await window.apiErrorMessage(res, "Couldn't create a link."));
+          const data = await res.json();
+          await navigator.clipboard.writeText(window.location.origin + data.url);
+          window.showToast("Link copied (works only while you're signed in).", "success");
+        } catch (err) {
+          window.showToast(err.message, "error");
+        }
       });
       row.querySelector("[data-delete]").addEventListener("click", async () => {
         if (!confirm("Delete this voice message?")) return;
-        await fetch(`/api/voice-messages/${vm.id}`, { method: "DELETE" });
-        if (window.showToast) window.showToast("Voice message deleted.", "success");
+        const res = await fetch(`/api/voice-messages/${vm.id}`, { method: "DELETE" });
+        if (!res.ok) return window.showToast(await window.apiErrorMessage(res, "Couldn't delete."), "error");
+        window.showToast("Voice message deleted.", "success");
         load();
       });
 
